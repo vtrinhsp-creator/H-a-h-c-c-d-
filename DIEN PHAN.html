@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Mô Phỏng Pin Điện Hóa 3D (Galvanic Cell)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #111118;
+            font-family: 'Inter', sans-serif;
+            color: #f3f4f6;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none; /* Let clicks pass to 3D canvas */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        .pointer-events-auto {
+            pointer-events: auto;
+        }
+        
+        /* Floating 3D Labels */
+        .label-3d {
+            position: absolute;
+            background: rgba(17, 24, 39, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            font-size: 0.875rem;
+            font-weight: 600;
+            backdrop-filter: blur(4px);
+            transform: translate(-50%, -50%);
+            white-space: nowrap;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+        .anode-label { border-top: 3px solid #9ca3af; }
+        .cathode-label { border-top: 3px solid #f97316; }
+
+        /* Loader */
+        #loader {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: #111827;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 50;
+            transition: opacity 0.5s;
+        }
+
+        /* 3D Ion Labels for CSS2DRenderer */
+        .ion-label {
+            color: #ffffff;
+            font-weight: bold;
+            font-size: 16px;
+            font-family: 'Inter', sans-serif;
+            text-shadow: 0 0 6px rgba(0, 0, 0, 1), 0 0 2px rgba(0, 0, 0, 1);
+            pointer-events: none;
+            margin-top: -15px; /* Nâng nhãn lên một chút so với hạt */
+        }
+    </style>
+    
+    <!-- Use import maps for clean Three.js module loading -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.128.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.128.0/examples/jsm/",
+                "three/addons/renderers/CSS2DRenderer.js": "https://unpkg.com/three@0.128.0/examples/jsm/renderers/CSS2DRenderer.js"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="loader">
+        <div class="text-xl font-bold text-blue-400 animate-pulse">Đang tải môi trường 3D...</div>
+    </div>
+
+    <!-- 3D Canvas -->
+    <div id="canvas-container"></div>
+
+    <!-- UI Overlay -->
+    <div id="ui-layer" class="p-6">
+        <div class="text-center w-full">
+            <h1 class="text-2xl md:text-3xl font-bold text-blue-300 drop-shadow-md">Pin Điện Hóa 3D (Daniell Cell)</h1>
+            <p class="text-gray-400 text-sm mt-1">Dùng chuột/cảm ứng để xoay và thu phóng</p>
+        </div>
+
+        <!-- 3D tracking labels -->
+        <div id="label-zn" class="label-3d anode-label">
+            Anode (Zn) - Cực Âm (-)<br>
+            <span class="text-yellow-400 font-mono text-xs mt-1 block">Zn &rarr; Zn<sup>2+</sup> + 2e<sup>-</sup></span>
+        </div>
+        <div id="label-cu" class="label-3d cathode-label">
+            Cathode (Cu) - Cực Dương (+)<br>
+            <span class="text-blue-300 font-mono text-xs mt-1 block">Cu<sup>2+</sup> + 2e<sup>-</sup> &rarr; Cu</span>
+        </div>
+        <div id="label-salt" class="label-3d">Cầu Muối</div>
+
+        <div class="flex flex-col items-center gap-4 pb-8 pointer-events-auto">
+            <!-- Nút di chuột để xoay -->
+            <div id="btnRotateHover" class="bg-gray-800/80 border border-gray-600 text-gray-200 px-6 py-2 rounded-full cursor-pointer shadow-lg hover:bg-gray-700 transition-colors backdrop-blur-md">
+                🎯 Di chuột vào đây để Xoay góc nhìn
+            </div>
+
+            <!-- Nút điều khiển -->
+            <div class="bg-gray-800/80 backdrop-blur-md p-2 rounded-full border border-gray-700 flex gap-4 shadow-2xl">
+                <button id="btnPlayPause" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 px-8 rounded-full transition-all flex items-center gap-2">
+                    <span id="textPlayPause">Bắt đầu Phản Ứng</span>
+                </button>
+                <button id="btnReset" class="bg-gray-700 hover:bg-gray-600 text-white font-semibold py-3 px-6 rounded-full transition-all flex items-center gap-2">
+                    Làm lại
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+        // --- GLOBAL VARIABLES ---
+        let scene, camera, renderer, labelRenderer, controls;
+        let isRunning = false;
+        let isBulbOn = false;
+        
+        // Scene Elements
+        let znWet, cuWet; // Only the wet parts will scale
+        let pointLight, bulbEmissiveMat;
+        let wireCurve;
+        let electrons = [];
+        let ions = []; // Array chứa các hạt ion
+        
+        const initialScale = { x: 1, z: 1 };
+        const minZnScale = 0.2;
+        const maxCuScale = 2.5;
+
+        // Labels
+        const labelZn = document.getElementById('label-zn');
+        const labelCu = document.getElementById('label-cu');
+        const labelSalt = document.getElementById('label-salt');
+        
+        let labelPosZn, labelPosCu, labelPosSalt;
+
+        init();
+        animate();
+
+        function init() {
+            const container = document.getElementById('canvas-container');
+
+            // 1. Scene Setup
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x111118, 0.02);
+
+            // 2. Camera Setup
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 5, 20);
+
+            // 3. Renderer Setup
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            container.appendChild(renderer.domElement);
+
+            // 3.5 CSS2DRenderer Setup (cho nhãn ion 3D)
+            labelRenderer = new CSS2DRenderer();
+            labelRenderer.setSize(window.innerWidth, window.innerHeight);
+            labelRenderer.domElement.style.position = 'absolute';
+            labelRenderer.domElement.style.top = '0px';
+            labelRenderer.domElement.style.pointerEvents = 'none'; // Để chuột click xuyên qua được xuống WebGL
+            container.appendChild(labelRenderer.domElement);
+
+            // 4. Controls
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.autoRotate = false; // Tắt autoRotate mặc định
+            controls.autoRotateSpeed = 2.0;
+            controls.maxPolarAngle = Math.PI / 2 + 0.1; // Don't go too far below ground
+            controls.minDistance = 10;
+            controls.maxDistance = 40;
+
+            // Stop auto-rotate when user interacts
+            controls.addEventListener('start', () => { controls.autoRotate = false; });
+
+            // 5. Lighting Setup (Studio Lighting)
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+            dirLight.position.set(5, 10, 5);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.width = 1024;
+            dirLight.shadow.mapSize.height = 1024;
+            scene.add(dirLight);
+            
+            const fillLight = new THREE.DirectionalLight(0xaabbff, 0.3);
+            fillLight.position.set(-5, 5, -5);
+            scene.add(fillLight);
+
+            // Điểm sáng (PointLights) tạo hiệu ứng phản quang lấp lánh trên thủy tinh
+            const leftHighlight = new THREE.PointLight(0xffffff, 0.6, 15);
+            leftHighlight.position.set(-6, -1, 4);
+            scene.add(leftHighlight);
+
+            const rightHighlight = new THREE.PointLight(0xffffff, 0.6, 15);
+            rightHighlight.position.set(6, -1, 4);
+            scene.add(rightHighlight);
+
+            // 6. Build the 3D Models
+            buildEnvironment();
+
+            // 7. Events
+            window.addEventListener('resize', onWindowResize);
+            
+            // Remove Loader
+            document.getElementById('loader').style.opacity = '0';
+            setTimeout(() => document.getElementById('loader').remove(), 500);
+
+            // Setup UI Buttons
+            setupUI();
+        }
+
+        function buildEnvironment() {
+            // Materials (Realistic High-End Setup)
+            const glassMaterial = new THREE.MeshPhysicalMaterial({
+                color: 0xffffff,
+                metalness: 0.1,
+                roughness: 0.05,
+                transmission: 1.0, // glass effect
+                ior: 1.5,
+                thickness: 0.5,
+                transparent: true,
+                side: THREE.DoubleSide
+            });
+
+            const liquidZnMaterial = new THREE.MeshPhysicalMaterial({
+                color: 0xeeeeee, transmission: 0.9, transparent: true, opacity: 0.6, roughness: 0.1
+            });
+            
+            const liquidCuMaterial = new THREE.MeshPhysicalMaterial({
+                color: 0x0055ff, transmission: 0.8, transparent: true, opacity: 0.9, roughness: 0.1
+            });
+
+            const znMaterial = new THREE.MeshStandardMaterial({
+                color: 0xa0a0a5, metalness: 0.8, roughness: 0.3
+            });
+
+            // YÊU CẦU: Màu đồng cam đỏ rõ rệt
+            const cuMaterial = new THREE.MeshStandardMaterial({
+                color: 0xeb6e34, metalness: 0.8, roughness: 0.2
+            });
+
+            const wireMaterial = new THREE.MeshStandardMaterial({
+                color: 0x1f2937, metalness: 0.2, roughness: 0.8
+            });
+
+            // --- BEAKERS ---
+            // Left Beaker (Zn)
+            const beakerGeo = new THREE.CylinderGeometry(2.5, 2.5, 6, 32, 1, true); // Open top
+            const beakerBottomGeo = new THREE.CylinderGeometry(2.5, 2.5, 0.2, 32);
+            
+            const leftBeaker = new THREE.Mesh(beakerGeo, glassMaterial);
+            leftBeaker.position.set(-4, -1, 0);
+            const leftBottom = new THREE.Mesh(beakerBottomGeo, glassMaterial);
+            leftBottom.position.set(-4, -4, 0);
+            scene.add(leftBeaker, leftBottom);
+
+            const liquidZn = new THREE.Mesh(new THREE.CylinderGeometry(2.4, 2.4, 4.5, 32), liquidZnMaterial);
+            liquidZn.position.set(-4, -1.75, 0);
+            scene.add(liquidZn);
+
+            // Right Beaker (Cu)
+            const rightBeaker = new THREE.Mesh(beakerGeo, glassMaterial);
+            rightBeaker.position.set(4, -1, 0);
+            const rightBottom = new THREE.Mesh(beakerBottomGeo, glassMaterial);
+            rightBottom.position.set(4, -4, 0);
+            scene.add(rightBeaker, rightBottom);
+
+            const liquidCu = new THREE.Mesh(new THREE.CylinderGeometry(2.4, 2.4, 4.5, 32), liquidCuMaterial);
+            liquidCu.position.set(4, -1.75, 0);
+            scene.add(liquidCu);
+
+            // --- ELECTRODES (Split into Dry and Wet) ---
+            const electrodeGeo = new THREE.BoxGeometry(1.5, 3.5, 0.2);
+            
+            // Zn Dry (Top)
+            const znDry = new THREE.Mesh(electrodeGeo, znMaterial);
+            znDry.position.set(-4, 2.25, 0);
+            znDry.castShadow = true;
+            
+            // Zn Wet (Bottom - this one shrinks)
+            znWet = new THREE.Mesh(electrodeGeo, znMaterial);
+            znWet.position.set(-4, -1.25, 0);
+            
+            scene.add(znDry, znWet);
+
+            // Cu Dry (Top)
+            const cuDry = new THREE.Mesh(electrodeGeo, cuMaterial);
+            cuDry.position.set(4, 2.25, 0);
+            cuDry.castShadow = true;
+            
+            // Cu Wet (Bottom - this one grows)
+            cuWet = new THREE.Mesh(electrodeGeo, cuMaterial);
+            cuWet.position.set(4, -1.25, 0);
+            
+            scene.add(cuDry, cuWet);
+
+            // --- SALT BRIDGE ---
+            const path = new THREE.CatmullRomCurve3([
+                new THREE.Vector3(-2.5, -1, 0),
+                new THREE.Vector3(-2.5, 3.5, 0),
+                new THREE.Vector3(0, 4.5, 0),
+                new THREE.Vector3(2.5, 3.5, 0),
+                new THREE.Vector3(2.5, -1, 0)
+            ]);
+            const saltBridgeGeo = new THREE.TubeGeometry(path, 64, 0.4, 16, false);
+            const saltBridgeMat = new THREE.MeshPhysicalMaterial({
+                color: 0xffffff, transmission: 0.6, transparent: true, roughness: 0.2
+            });
+            const saltBridge = new THREE.Mesh(saltBridgeGeo, saltBridgeMat);
+            scene.add(saltBridge);
+
+            // --- WIRES & BULB ---
+            bulbEmissiveMat = new THREE.MeshStandardMaterial({
+                color: 0xffffff,
+                emissive: 0x000000, // Black initially
+                transparent: true,
+                opacity: 0.9,
+                roughness: 0.1
+            });
+
+            const bulbBase = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.8, 16), wireMaterial);
+            bulbBase.position.set(0, 6.5, 0);
+            const bulbGlass = new THREE.Mesh(new THREE.SphereGeometry(1.2, 32, 32), bulbEmissiveMat);
+            bulbGlass.position.set(0, 7.5, 0);
+            scene.add(bulbBase, bulbGlass);
+
+            // Light inside bulb
+            pointLight = new THREE.PointLight(0xffdd44, 0, 15); // Intensity 0 initially
+            pointLight.position.set(0, 7.5, 0);
+            scene.add(pointLight);
+
+            // Wire Curve (Zn -> Bulb -> Cu)
+            wireCurve = new THREE.CatmullRomCurve3([
+                new THREE.Vector3(-4, 4, 0), // Top of Zn
+                new THREE.Vector3(-4, 6.5, 0),
+                new THREE.Vector3(-0.5, 6.5, 0), // Bulb left
+                new THREE.Vector3(0.5, 6.5, 0),  // Bulb right
+                new THREE.Vector3(4, 6.5, 0),
+                new THREE.Vector3(4, 4, 0)   // Top of Cu
+            ]);
+
+            const wireGeo = new THREE.TubeGeometry(wireCurve, 64, 0.1, 8, false);
+            const wire = new THREE.Mesh(wireGeo, wireMaterial);
+            scene.add(wire);
+
+            // Set positions for HTML labels
+            labelPosZn = new THREE.Vector3(-4, 5, 0);
+            labelPosCu = new THREE.Vector3(4, 5, 0);
+            labelPosSalt = new THREE.Vector3(0, 5, 0);
+        }
+
+        // --- UI & LOGIC ---
+        function setupUI() {
+            const btnPlayPause = document.getElementById('btnPlayPause');
+            const btnReset = document.getElementById('btnReset');
+            const textPlayPause = document.getElementById('textPlayPause');
+            const btnRotateHover = document.getElementById('btnRotateHover');
+
+            // Xử lý sự kiện di chuột để xoay
+            btnRotateHover.addEventListener('mouseenter', () => {
+                controls.autoRotate = true;
+                btnRotateHover.classList.add('bg-gray-600', 'text-white', 'border-blue-400');
+            });
+            btnRotateHover.addEventListener('mouseleave', () => {
+                controls.autoRotate = false;
+                btnRotateHover.classList.remove('bg-gray-600', 'text-white', 'border-blue-400');
+            });
+
+            btnPlayPause.addEventListener('click', () => {
+                isRunning = !isRunning;
+                if(isRunning) {
+                    textPlayPause.textContent = "Tạm dừng";
+                    btnPlayPause.classList.replace('bg-blue-600', 'bg-yellow-600');
+                    btnPlayPause.classList.replace('hover:bg-blue-500', 'hover:bg-yellow-500');
+                } else {
+                    textPlayPause.textContent = "Tiếp tục";
+                    btnPlayPause.classList.replace('bg-yellow-600', 'bg-blue-600');
+                    btnPlayPause.classList.replace('hover:bg-yellow-500', 'hover:bg-blue-500');
+                }
+            });
+
+            btnReset.addEventListener('click', () => {
+                isRunning = false;
+                isBulbOn = false;
+                
+                // Reset UI
+                textPlayPause.textContent = "Bắt đầu Phản Ứng";
+                btnPlayPause.classList.remove('bg-yellow-600', 'hover:bg-yellow-500');
+                btnPlayPause.classList.add('bg-blue-600', 'hover:bg-blue-500');
+
+                // Reset Electrodes Scale
+                znWet.scale.set(1, 1, 1);
+                cuWet.scale.set(1, 1, 1);
+
+                // Reset Bulb
+                bulbEmissiveMat.emissive.setHex(0x000000);
+                pointLight.intensity = 0;
+
+                // Clear Electrons
+                electrons.forEach(el => scene.remove(el.mesh));
+                electrons = [];
+
+                // Clear Ions
+                ions.forEach(ion => {
+                    ion.mesh.remove(ion.cssObj);
+                    scene.remove(ion.mesh);
+                });
+                ions = [];
+            });
+        }
+
+        // Create an electron mesh
+        function createElectron() {
+            const elMat = new THREE.MeshBasicMaterial({ color: 0xffee00 }); // Bright Yellow
+            const elMesh = new THREE.Mesh(new THREE.SphereGeometry(0.18, 16, 16), elMat);
+            scene.add(elMesh);
+            return { mesh: elMesh, progress: 0 };
+        }
+
+        // Tạo hạt Ion 3D có gắn nhãn HTML
+        function createIon(type) {
+            const isZn = type === 'Zn';
+            const color = isZn ? 0xaaddff : 0x00ffff; // Zn2+ sáng trắng/xanh nhạt, Cu2+ xanh lơ
+            const geo = new THREE.SphereGeometry(0.2, 16, 16);
+            const mat = new THREE.MeshBasicMaterial({ color: color });
+            const mesh = new THREE.Mesh(geo, mat);
+
+            // Gắn nhãn CSS2DObject
+            const labelDiv = document.createElement('div');
+            labelDiv.className = 'ion-label';
+            labelDiv.textContent = isZn ? 'Zn²⁺' : 'Cu²⁺';
+            const cssObj = new CSS2DObject(labelDiv);
+            cssObj.position.set(0, 0, 0);
+            mesh.add(cssObj);
+
+            // Vị trí xuất phát
+            if (isZn) {
+                // Zn2+ rời khỏi điện cực Kẽm (tan vào dung dịch)
+                mesh.position.set(-4 + (Math.random()*0.5 - 0.25), -1.5 + Math.random(), (Math.random()-0.5));
+            } else {
+                // Cu2+ từ dung dịch bay vào điện cực Đồng
+                mesh.position.set(4 + (Math.random()*3 - 1.5), -3.5 + Math.random()*2, (Math.random()*3-1.5));
+            }
+
+            scene.add(mesh);
+            return { mesh: mesh, type: type, progress: 0, cssObj: cssObj };
+        }
+
+        // --- RENDER LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+
+            if (isRunning) {
+                // 1. Scale Electrodes (Wet parts only)
+                if (znWet.scale.x > minZnScale) {
+                    znWet.scale.x -= 0.0005;
+                    znWet.scale.z -= 0.0005;
+                }
+                if (cuWet.scale.x < maxCuScale) {
+                    cuWet.scale.x += 0.0005;
+                    cuWet.scale.z += 0.0005;
+                }
+
+                // --- QUẢN LÝ ION ---
+                if (Math.random() < 0.02) { // Tỉ lệ sinh ion
+                    ions.push(createIon(Math.random() > 0.5 ? 'Zn' : 'Cu'));
+                }
+
+                for (let i = ions.length - 1; i >= 0; i--) {
+                    let ion = ions[i];
+                    ion.progress += 0.01;
+
+                    if (ion.type === 'Zn') {
+                        // Zn2+ di chuyển dần ra xa thanh kẽm
+                        ion.mesh.position.x += 0.02;
+                        ion.mesh.position.y -= 0.01;
+                    } else {
+                        // Cu2+ bị hút về phía thanh đồng (x=4, y=-1.5)
+                        ion.mesh.position.x = THREE.MathUtils.lerp(ion.mesh.position.x, 4, 0.03);
+                        ion.mesh.position.y = THREE.MathUtils.lerp(ion.mesh.position.y, -1.5, 0.03);
+                        ion.mesh.position.z = THREE.MathUtils.lerp(ion.mesh.position.z, 0, 0.03);
+                    }
+
+                    // Xóa ion khi đã đi hết quãng đường hoặc bám vào cực Đồng
+                    if (ion.progress > 2.0 || (ion.type === 'Cu' && Math.abs(ion.mesh.position.x - 4) < 0.4 && Math.abs(ion.mesh.position.z) < 0.4)) {
+                        ion.mesh.remove(ion.cssObj);
+                        scene.remove(ion.mesh);
+                        ions.splice(i, 1);
+                    }
+                }
+
+                // 2. Manage Electrons
+                // Spawn new electron randomly
+                if (Math.random() < 0.03) {
+                    electrons.push(createElectron());
+                }
+
+                for (let i = electrons.length - 1; i >= 0; i--) {
+                    let el = electrons[i];
+                    el.progress += 0.005; // Speed
+
+                    if (el.progress >= 1) {
+                        scene.remove(el.mesh);
+                        electrons.splice(i, 1);
+                    } else {
+                        // Move along wire
+                        const point = wireCurve.getPoint(el.progress);
+                        el.mesh.position.copy(point);
+
+                        // Turn on bulb if electron reaches middle (progress ~ 0.5)
+                        if (!isBulbOn && el.progress > 0.45 && el.progress < 0.55) {
+                            isBulbOn = true;
+                            bulbEmissiveMat.emissive.setHex(0xffaa00);
+                            pointLight.intensity = 2;
+                        }
+                    }
+                }
+            }
+
+            // Update 3D HTML Labels position
+            updateLabelPosition(labelZn, labelPosZn);
+            updateLabelPosition(labelCu, labelPosCu);
+            updateLabelPosition(labelSalt, labelPosSalt);
+
+            renderer.render(scene, camera);
+            labelRenderer.render(scene, camera); // Render các nhãn ion 3D
+        }
+
+        function updateLabelPosition(element, vec3) {
+            const vector = vec3.clone();
+            vector.project(camera);
+            
+            // Check if object is behind camera
+            if (vector.z > 1) {
+                element.style.opacity = '0';
+                return;
+            }
+            
+            element.style.opacity = '1';
+            const x = (vector.x * .5 + .5) * window.innerWidth;
+            const y = (vector.y * -.5 + .5) * window.innerHeight;
+            
+            element.style.left = `${x}px`;
+            element.style.top = `${y}px`;
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            labelRenderer.setSize(window.innerWidth, window.innerHeight);
+        }
+    </script>
+</body>
+</html>
